@@ -31,6 +31,11 @@ enum CaptureGeometry {
         return CGDisplayBounds(CGMainDisplayID())
     }
 
+    // Quartz cursor fractions grow downward; the default AppKit view grows upward.
+    static func appKitY(screenFraction: CGFloat, height: CGFloat) -> CGFloat {
+        (1 - screenFraction) * height
+    }
+
     static func selfTest() -> Bool {
         let display = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
         let center = rect(around: CGPoint(x: -1000, y: 400), in: display,
@@ -42,6 +47,8 @@ enum CaptureGeometry {
             && center.midX == -1000 && center.midY == 400
             && edge.minX == display.minX && edge.minY == display.minY
             && point.x > 0 && point.x < 0.1 && point.y > 0 && point.y < 0.1
+            && appKitY(screenFraction: 0.25, height: 100) == 75
+            && appKitY(screenFraction: 0.75, height: 100) == 25
     }
 }
 
@@ -49,7 +56,8 @@ enum CaptureGeometry {
 final class MagnifierPreview: NSView {
     var image: NSImage? { didSet { needsDisplay = true } }
     var target = CGPoint(x: 0.5, y: 0.5) { didSet { needsDisplay = true } }
-    override var isFlipped: Bool { true }
+    // Do not flip the AppKit canvas: NSImage rendering is otherwise upside down.
+    override var isFlipped: Bool { false }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
@@ -71,7 +79,7 @@ final class MagnifierPreview: NSView {
             )
         }
         let cx = target.x * bounds.width
-        let cy = target.y * bounds.height
+        let cy = CaptureGeometry.appKitY(screenFraction: target.y, height: bounds.height)
         let path = NSBezierPath()
         path.move(to: CGPoint(x: cx - 16, y: cy))
         path.line(to: CGPoint(x: cx - 5, y: cy))
