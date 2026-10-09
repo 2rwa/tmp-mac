@@ -54,14 +54,18 @@ jobs:
             --renderer cycles_cpu --output artifacts/cycles_cpu.png \
             --save-blend artifacts/m1_probe.blend 2>&1 | tee artifacts/cycles_cpu.log
 
-      - name: Cycles Metal GPU render
-        continue-on-error: true
-        timeout-minutes: 12
-        run: |
-          set -o pipefail
-          "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
-            --python blender/render_probe.py -- \
-            --renderer cycles_metal --output artifacts/cycles_metal.png 2>&1 | tee artifacts/cycles_metal.log
+      - name: Upload completed CPU render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5-2-2-cpu-preview
+          path: |
+            artifacts/cycles_cpu.png
+            artifacts/cycles_cpu.json
+            artifacts/cycles_cpu.log
+            artifacts/m1_probe.blend
+            artifacts/blender-version.txt
+          if-no-files-found: warn
 
       - name: EEVEE render
         continue-on-error: true
@@ -71,6 +75,26 @@ jobs:
           "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
             --python blender/render_probe.py -- \
             --renderer eevee --output artifacts/eevee.png 2>&1 | tee artifacts/eevee.log
+
+      - name: Upload completed EEVEE render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5-2-2-eevee-preview
+          path: |
+            artifacts/eevee.png
+            artifacts/eevee.json
+            artifacts/eevee.log
+          if-no-files-found: warn
+
+      - name: Cycles Metal GPU render
+        continue-on-error: true
+        timeout-minutes: 4
+        run: |
+          set -o pipefail
+          "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
+            --python blender/render_probe.py -- \
+            --renderer cycles_metal --output artifacts/cycles_metal.png 2>&1 | tee artifacts/cycles_metal.log
 
       - name: Report test results
         if: always()
