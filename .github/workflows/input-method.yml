@@ -26,6 +26,24 @@ jobs:
           APP="$RUNNER_TEMP/input-method-output/InputMethodStatus.app"
           file "$APP/Contents/MacOS/InputMethodStatus" | tee artifacts/binary.txt
           ditto -c -k --sequesterRsrc --keepParent "$APP" artifacts/InputMethodStatus-macOS-arm64.zip
+      - name: Create and verify double-clickable DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/input-method-output/InputMethodStatus.app"
+          STAGE="$RUNNER_TEMP/input-method-dmg"
+          MOUNT="$RUNNER_TEMP/input-method-mounted"
+          mkdir -p "$STAGE" "$MOUNT"
+          ditto "$APP" "$STAGE/InputMethodStatus.app"
+          hdiutil create -volname "InputMethodStatus" -srcfolder "$STAGE" -format UDZO -ov \
+            artifacts/InputMethodStatus-macOS-arm64.dmg
+          hdiutil verify artifacts/InputMethodStatus-macOS-arm64.dmg
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" artifacts/InputMethodStatus-macOS-arm64.dmg
+          test -d "$MOUNT/InputMethodStatus.app"
+          test -x "$MOUNT/InputMethodStatus.app/Contents/MacOS/InputMethodStatus"
+          plutil -lint "$MOUNT/InputMethodStatus.app/Contents/Info.plist"
+          hdiutil detach "$MOUNT"
+          echo "PASS: DMG mounts and contains runnable InputMethodStatus.app" | tee artifacts/dmg-check.txt
       - name: Deterministic self-test and live input-source dump
         shell: bash
         run: |
@@ -57,7 +75,7 @@ jobs:
             echo
             test -s artifacts/self-test.txt && cat artifacts/self-test.txt || echo "Self-test not completed"
             echo
-            echo "Download artifact to get the app zip, input source dump, and optional screenshot."
+            echo "Download the workflow artifact ZIP, extract it once, then open InputMethodStatus-macOS-arm64.dmg and drag/open InputMethodStatus.app."
             test ! -s artifacts/window-result.txt || cat artifacts/window-result.txt
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload app and diagnostics
