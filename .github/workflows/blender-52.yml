@@ -1,0 +1,103 @@
+name: Blender 5.2.2 M1 render validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/blender-52.yml'
+      - 'blender/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: macos-26
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine inventory
+        run: |
+          mkdir -p artifacts
+          {
+            sw_vers
+            uname -m
+            sysctl -n machdep.cpu.brand_string || true
+            sysctl -n hw.memsize || true
+            system_profiler SPDisplaysDataType || true
+          } | tee artifacts/environment.txt
+
+      - name: Install Blender 5.2.2 arm64
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-delay 3 \
+            'https://download.blender.org/release/Blender5.2/blender-5.2.2-macos-arm64.dmg' \
+            -o "$RUNNER_TEMP/blender-5.2.2.dmg"
+          mkdir -p "$RUNNER_TEMP/blender-mounted"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/blender-mounted" "$RUNNER_TEMP/blender-5.2.2.dmg"
+          find "$RUNNER_TEMP/blender-mounted" -maxdepth 2 -name Blender.app -print
+          cp -R "$RUNNER_TEMP/blender-mounted/Blender.app" "$RUNNER_TEMP/Blender.app"
+          hdiutil detach "$RUNNER_TEMP/blender-mounted" || true
+          echo "BLENDER=$RUNNER_TEMP/Blender.app/Contents/MacOS/Blender" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/Blender.app/Contents/MacOS/Blender" --background --factory-startup --version | tee artifacts/blender-version.txt
+
+      - name: Cycles CPU render
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
+            --python blender/render_probe.py -- \
+            --renderer cycles_cpu --output artifacts/cycles_cpu.png \
+            --save-blend artifacts/m1_probe.blend 2>&1 | tee artifacts/cycles_cpu.log
+
+      - name: Cycles Metal GPU render
+        continue-on-error: true
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
+            --python blender/render_probe.py -- \
+            --renderer cycles_metal --output artifacts/cycles_metal.png 2>&1 | tee artifacts/cycles_metal.log
+
+      - name: EEVEE render
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          "$BLENDER" --background --factory-startup --threads 3 --python-exit-code 7 \
+            --python blender/render_probe.py -- \
+            --renderer eevee --output artifacts/eevee.png 2>&1 | tee artifacts/eevee.log
+
+      - name: Report test results
+        if: always()
+        run: |
+          {
+            echo '# Blender 5.2.2 on GitHub-hosted M1 / macOS 26'
+            echo ''
+            echo '| Renderer | Validation | Output |'
+            echo '|---|---|---|'
+            for engine in cycles_cpu cycles_metal eevee; do
+              if test -s "artifacts/$engine.png"; then
+                echo "| $engine | Image generated | $engine.png |"
+              elif test -e "artifacts/$engine.json"; then
+                echo "| $engine | Failed: see JSON/log | — |"
+              else
+                echo "| $engine | Not completed | — |"
+              fi
+            done
+            echo ''
+            echo 'Output images, source .blend, JSON metadata and Blender logs are attached as an artifact.'
+          } | tee artifacts/report.md
+          cat artifacts/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload blend / PNG / logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-5-2-2-m1-render
+          path: artifacts/
+          if-no-files-found: warn
