@@ -1,0 +1,38 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mac WebGPU probe</title>
+<style>body{font:16px system-ui;background:#151f30;color:#fff;padding:24px}canvas{width:640px;max-width:95%;background:#333;border:1px solid #aaa}pre{white-space:pre-wrap;font-size:13px}</style>
+</head><body><h1>Mac browser GPU probe</h1><p id="state">Testing</p>
+<canvas id="gpu" width="320" height="180"></canvas><pre id="json"></pre><script>
+window.testGPU=async()=>{
+ const r={userAgent:navigator.userAgent,secureContext:isSecureContext,webgpu:!!navigator.gpu,webgl2:false,adapter:false,compute:false,render:false,errors:[]};
+ const log=()=>document.getElementById('json').textContent=JSON.stringify(r,null,2);
+ try{const gl=document.createElement('canvas').getContext('webgl2');r.webgl2=!!gl;if(gl)r.webglRenderer=gl.getParameter(gl.RENDERER)}catch(e){r.errors.push('WebGL2 '+e)}
+ log();
+ try{
+  if(!navigator.gpu)throw Error('navigator.gpu unavailable');
+  const adapter=await navigator.gpu.requestAdapter();
+  if(!adapter)throw Error('requestAdapter returned null');
+  r.adapter=true;
+  try{r.adapterInfo={vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description}}catch(e){r.errors.push('adapterInfo '+e)}
+  const d=await adapter.requestDevice();
+  const mod=d.createShaderModule({code:'@group(0) @binding(0) var<storage,read_write> data: array<u32>; @compute @workgroup_size(1) fn main(){data[0]=0x1234abcd;}'});
+  const pipeline=d.createComputePipeline({layout:'auto',compute:{module:mod,entryPoint:'main'}});
+  const buf=d.createBuffer({size:4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC});
+  const out=d.createBuffer({size:4,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+  const bind=d.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:buf}}]});
+  const enc=d.createCommandEncoder(),pass=enc.beginComputePass();
+  pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.dispatchWorkgroups(1);pass.end();
+  enc.copyBufferToBuffer(buf,0,out,0,4);d.queue.submit([enc.finish()]);
+  await out.mapAsync(GPUMapMode.READ);const val=new Uint32Array(out.getMappedRange())[0];r.compute=(val===0x1234abcd);r.computeValue='0x'+val.toString(16);out.unmap();buf.destroy();out.destroy();
+  const canvas=document.getElementById('gpu'),ctx=canvas.getContext('webgpu');
+  if(!ctx)throw Error('WebGPU canvas context unavailable');
+  const format=navigator.gpu.getPreferredCanvasFormat();ctx.configure({device:d,format,alphaMode:'opaque'});
+  const shader=d.createShaderModule({code:'@vertex fn v(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {var p=array<vec2f,3>(vec2f(-0.85,-0.75),vec2f(0.85,-0.75),vec2f(0.0,0.85));return vec4f(p[i],0.0,1.0);} @fragment fn f()->@location(0) vec4f{return vec4f(0.08,0.95,0.5,1.0);}'});
+  const rp=d.createRenderPipeline({layout:'auto',vertex:{module:shader,entryPoint:'v'},fragment:{module:shader,entryPoint:'f',targets:[{format}]}});
+  const ce=d.createCommandEncoder(),p=ce.beginRenderPass({colorAttachments:[{view:ctx.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0.08,g:0.1,b:0.28,a:1}}]});
+  p.setPipeline(rp);p.draw(3);p.end();d.queue.submit([ce.finish()]);await d.queue.onSubmittedWorkDone();
+  r.render=true;r.renderFormat=format;
+ }catch(e){r.errors.push((e.stack||String(e)).slice(0,1500))}
+ document.getElementById('state').textContent=r.compute&&r.render?'GPU compute + triangle PASS':'Probe failed or unsupported';
+ log();return r;
+};
+</script></body></html>

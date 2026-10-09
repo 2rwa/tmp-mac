@@ -1,0 +1,67 @@
+name: macOS 26 M1 environment and browsers
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine and Safari inventory
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          {
+            echo "UTC: $(date -u)"
+            echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH ImageOS=$ImageOS ImageVersion=$ImageVersion"
+            sw_vers
+            uname -a
+            sysctl -n machdep.cpu.brand_string || true
+            sysctl -n hw.memsize || true
+            system_profiler SPDisplaysDataType || true
+            ls -ld /Applications/Safari.app /Applications/Google\ Chrome.app /Applications/Chromium.app 2>&1 || true
+            defaults read /Applications/Safari.app/Contents/Info CFBundleShortVersionString || true
+            /usr/bin/safaridriver --version || true
+            node --version
+            xcodebuild -version
+          } > artifacts/environment.txt 2>&1
+          cat artifacts/environment.txt
+      - name: Native Metal device test
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          swift tests/metal.swift 2>&1 | tee artifacts/metal.txt
+      - name: Install Chromium and WebKit
+        shell: bash
+        run: |
+          npm install --no-save playwright
+          npx playwright install chromium webkit
+      - name: Test browsers and WebGPU
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/browser.mjs 2>&1 | tee artifacts/browser-log.txt
+      - name: Try graphical Safari screenshot
+        continue-on-error: true
+        shell: bash
+        run: |
+          { open -a Safari || true; sleep 3; osascript -e 'tell application "Safari" to get version' || true; screencapture -x artifacts/native-desktop.png; } > artifacts/native-safari-gui.txt 2>&1
+          cat artifacts/native-safari-gui.txt
+      - name: Actions report
+        if: always()
+        shell: bash
+        run: |
+          if test -f artifacts/report.md; then cat artifacts/report.md >> "$GITHUB_STEP_SUMMARY"; else echo "No browser report; see logs" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-26-m1-probe
+          path: artifacts/
+          if-no-files-found: warn
