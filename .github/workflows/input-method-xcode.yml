@@ -1,0 +1,62 @@
+name: Xcode source ZIP and local build check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'InputMethodStatus.xcodeproj/**'
+      - 'README-Xcode.md'
+      - 'input-method/**'
+      - '.github/workflows/input-method-xcode.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xcode:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          plutil -lint InputMethodStatus.xcodeproj/project.pbxproj input-method/Info.plist
+          xcodebuild -list -project InputMethodStatus.xcodeproj | tee artifacts/xcode-project-list.txt
+      - name: Build using Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project InputMethodStatus.xcodeproj \
+            -scheme InputMethodStatus \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/XcodeOutput" \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee artifacts/xcode-build.log
+          EXE="$RUNNER_TEMP/XcodeOutput/Build/Products/Debug/InputMethodStatus.app/Contents/MacOS/InputMethodStatus"
+          test -x "$EXE"
+          "$EXE" --self-test | tee artifacts/xcode-self-test.txt
+          "$EXE" --dump | tee artifacts/xcode-input-source.txt
+      - name: Package Xcode source only
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/InputMethodStatus-source"
+          mkdir -p "$STAGE/input-method"
+          ditto InputMethodStatus.xcodeproj "$STAGE/InputMethodStatus.xcodeproj"
+          ditto input-method/Sources "$STAGE/input-method/Sources"
+          cp input-method/Info.plist input-method/build.sh input-method/README.md "$STAGE/input-method/"
+          cp README-Xcode.md "$STAGE/"
+          ( cd "$RUNNER_TEMP" && ditto -c -k --keepParent "InputMethodStatus-source" "$GITHUB_WORKSPACE/artifacts/InputMethodStatus-Xcode-source.zip" )
+          unzip -l artifacts/InputMethodStatus-Xcode-source.zip | tee artifacts/source-zip-contents.txt
+      - name: Upload source and build validation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: input-method-xcode-source
+          path: artifacts/
+          if-no-files-found: error
