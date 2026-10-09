@@ -1,0 +1,69 @@
+name: Build Input Method Status
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'input-method/**'
+      - '.github/workflows/input-method.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  app:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Apple Silicon and toolchain
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          { sw_vers; uname -m; xcodebuild -version; xcrun swiftc -version; } | tee artifacts/toolchain.txt
+      - name: Build native .app
+        shell: bash
+        run: |
+          bash input-method/build.sh "$RUNNER_TEMP/input-method-output"
+          APP="$RUNNER_TEMP/input-method-output/InputMethodStatus.app"
+          file "$APP/Contents/MacOS/InputMethodStatus" | tee artifacts/binary.txt
+          ditto -c -k --sequesterRsrc --keepParent "$APP" artifacts/InputMethodStatus-macOS-arm64.zip
+      - name: Deterministic self-test and live input-source dump
+        shell: bash
+        run: |
+          EXE="$RUNNER_TEMP/input-method-output/InputMethodStatus.app/Contents/MacOS/InputMethodStatus"
+          "$EXE" --self-test | tee artifacts/self-test.txt
+          "$EXE" --dump > artifacts/input-sources.txt 2>&1
+          cat artifacts/input-sources.txt
+      - name: Best-effort native window and screenshot
+        shell: bash
+        continue-on-error: true
+        run: |
+          EXE="$RUNNER_TEMP/input-method-output/InputMethodStatus.app/Contents/MacOS/InputMethodStatus"
+          "$EXE" --window-smoke > artifacts/window.log 2>&1 &
+          PID=$!
+          sleep 3
+          screencapture -x artifacts/input-method-window.png || true
+          wait "$PID"
+          if test -s artifacts/input-method-window.png; then
+            echo "Screenshot captured" | tee artifacts/window-result.txt
+          else
+            echo "No GUI screenshot available (hosted runner limitation)" | tee artifacts/window-result.txt
+          fi
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Input Method Status — macOS 26 / Apple Silicon"
+            echo
+            test -s artifacts/self-test.txt && cat artifacts/self-test.txt || echo "Self-test not completed"
+            echo
+            echo "Download artifact to get the app zip, input source dump, and optional screenshot."
+            test ! -s artifacts/window-result.txt || cat artifacts/window-result.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload app and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: input-method-status-macos-arm64
+          path: artifacts/
+          if-no-files-found: warn
