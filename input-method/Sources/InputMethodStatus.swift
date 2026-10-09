@@ -225,18 +225,23 @@ private func selfTest() -> Bool {
         && snapshot.report.contains("(取得できません)")
 }
 
-if CommandLine.arguments.contains("--self-test") {
-    guard selfTest() else { fputs("FAIL: snapshot formatting\n", stderr); exit(1) }
-    print("PASS: snapshot formatting and missing-source fallback")
-} else if CommandLine.arguments.contains("--dump") {
-    print(TISReader.capture().report)
-} else {
-    // The initial entry point is the process's main thread.
-    MainActor.assumeIsolated {
-        let app = NSApplication.shared
-        app.setActivationPolicy(.regular)
-        let delegate = InputMethodAppDelegate()
-        app.delegate = delegate
-        app.run()
+@main
+private struct InputMethodStatusMain {
+    static func main() {
+        if CommandLine.arguments.contains("--self-test") {
+            guard selfTest() else { fputs("FAIL: snapshot formatting\n", stderr); exit(1) }
+            print("PASS: snapshot formatting and missing-source fallback")
+        } else if CommandLine.arguments.contains("--dump") {
+            print(TISReader.capture().report)
+        } else {
+            // Application entry occurs on the process's main thread.
+            MainActor.assumeIsolated {
+                let app = NSApplication.shared
+                app.setActivationPolicy(.regular)
+                let delegate = InputMethodAppDelegate()
+                app.delegate = delegate
+                app.run()
+            }
+        }
     }
 }
