@@ -12,10 +12,9 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
     private let pauseButton = NSButton(title: "一時停止", target: nil, action: nil)
     private let topButton = NSButton(checkboxWithTitle: "最前面に表示", target: nil, action: nil)
     private var timer: Timer?
-    private var inFlight = false
     private var paused = false
     private var zoom: CGFloat = 4
-    private var lastError: String?
+    private lazy var capture = CaptureSession(preview: preview, status: status)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(
@@ -90,13 +89,16 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
             permissionRow.widthAnchor.constraint(equalTo: column.widthAnchor),
             status.widthAnchor.constraint(equalTo: column.widthAnchor)
         ])
-        updatePermissionStatus()
+        capture.start()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
         // At most one screenshot request is in progress at a time.
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.capture.tick(visible: self.window?.isVisible == true, zoom: self.zoom)
+            }
         }
         if CommandLine.arguments.contains("--window-smoke") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { NSApp.terminate(nil) }
@@ -104,7 +106,10 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { timer?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) {
+        timer?.invalidate()
+        capture.stop()
+    }
 
     private func horizontal(_ views: [NSView]) -> NSStackView {
         let stack = NSStackView(views: views)
@@ -122,8 +127,7 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func togglePause() {
         paused.toggle()
         pauseButton.title = paused ? "再開" : "一時停止"
-        if paused { status.stringValue = "停止中：最後のフレームを表示しています" }
-        else { updatePermissionStatus() }
+        capture.setPaused(paused)
     }
 
     @objc private func toggleAlwaysOnTop() {
@@ -131,8 +135,7 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func requestPermission() {
-        if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
-        updatePermissionStatus()
+        capture.requestPermission()
     }
 
     @objc private func openPrivacySettings() {
@@ -142,59 +145,18 @@ private final class MagnifierAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func updatePermissionStatus() {
-        if CGPreflightScreenCaptureAccess() {
-            status.stringValue = "画面収録：許可済み / 12 fps（目標）"
-            lastError = nil
-        } else {
-            status.stringValue = "画面収録の許可が必要です。許可後はアプリを再起動してください。"
-        }
-    }
 
-    private func tick() {
-        guard !paused, !inFlight, window?.isVisible == true else { return }
-        guard CGPreflightScreenCaptureAccess() else {
-            updatePermissionStatus()
-            return
-        }
-        guard let cursor = CGEvent(source: nil)?.location else {
-            status.stringValue = "マウス位置を取得できません"
-            return
-        }
-        let source = CaptureGeometry.rect(
-            around: cursor, in: CaptureGeometry.display(containing: cursor),
-            preview: preview.bounds.size, zoom: zoom
-        )
-        let cursorPoint = CaptureGeometry.relativeCursor(cursor, in: source)
-        inFlight = true
-        Task { @MainActor in
-            defer { inFlight = false }
-            do {
-                let cgImage = try await SCScreenshotManager.captureImage(in: source)
-                guard !paused else { return }
-                preview.image = NSImage(cgImage: cgImage, size: source.size)
-                preview.target = cursorPoint
-                if lastError != nil { lastError = nil; updatePermissionStatus() }
-            } catch {
-                let message = error.localizedDescription
-                if message != lastError {
-                    lastError = message
-                    status.stringValue = "キャプチャ失敗: \(message)"
-                }
-            }
-        }
-    }
 }
 
 @main
 private struct CursorMagnifierMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            guard CaptureGeometry.selfTest() else {
+            guard CaptureGeometry.selfTest() && CaptureState.selfTest() else {
                 fputs("FAIL: cursor crop geometry\n", stderr)
                 exit(1)
             }
-            print("PASS: zoom crop, negative-origin display, edge clamping, cursor mapping")
+            print("PASS: zoom crop, cursor mapping, sleep/wake holds, stale callback, timeout and retry")
         } else {
             MainActor.assumeIsolated {
                 let app = NSApplication.shared
