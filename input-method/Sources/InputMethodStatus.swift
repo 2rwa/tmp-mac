@@ -231,9 +231,12 @@ if CommandLine.arguments.contains("--self-test") {
 } else if CommandLine.arguments.contains("--dump") {
     print(TISReader.capture().report)
 } else {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.regular)
-    let delegate = InputMethodAppDelegate()
-    app.delegate = delegate
-    app.run()
+    // The initial entry point is the process's main thread.
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        let delegate = InputMethodAppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
 }
