@@ -1,0 +1,58 @@
+name: Cursor Magnifier Xcode build and source ZIP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CursorMagnifier.xcodeproj/**'
+      - 'cursor-magnifier/**'
+      - '.github/workflows/cursor-magnifier-xcode.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          plutil -lint CursorMagnifier.xcodeproj/project.pbxproj cursor-magnifier/Info.plist
+          xcodebuild -list -project CursorMagnifier.xcodeproj | tee artifacts/xcode-project-list.txt
+      - name: Compile app and run geometry test
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project CursorMagnifier.xcodeproj \
+            -scheme CursorMagnifier \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/CursorMagnifierBuild" \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee artifacts/xcode-build.log
+          EXE="$RUNNER_TEMP/CursorMagnifierBuild/Build/Products/Debug/CursorMagnifier.app/Contents/MacOS/CursorMagnifier"
+          test -x "$EXE"
+          "$EXE" --self-test | tee artifacts/geometry-self-test.txt
+      - name: Package Xcode source ZIP
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/CursorMagnifier-Xcode-source"
+          mkdir -p "$STAGE"
+          ditto CursorMagnifier.xcodeproj "$STAGE/CursorMagnifier.xcodeproj"
+          ditto cursor-magnifier "$STAGE/cursor-magnifier"
+          ( cd "$RUNNER_TEMP" && ditto -c -k --keepParent "CursorMagnifier-Xcode-source" "$GITHUB_WORKSPACE/artifacts/CursorMagnifier-Xcode-source.zip" )
+          unzip -l artifacts/CursorMagnifier-Xcode-source.zip | tee artifacts/source-zip-contents.txt
+      - name: Upload test report and source ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-magnifier-xcode-source
+          path: artifacts/
+          if-no-files-found: error

@@ -7,3 +7,8 @@ Tests: OS/CPU/RAM/GPU inventory; native Metal device and command buffer; native 
 See the **job summary** and download the `macos-26-m1-probe` artifact to inspect `report.md`, `results.json`, environment logs and browser screenshots.
 
 The macOS hosted runner may not expose a usable desktop session or Metal acceleration. Native Safari.app, Chromium, and Playwright WebKit are recorded separately so unsupported features are not confused with working hardware GPU.
+
+## macOS utilities
+
+- [Cursor Magnifier](cursor-magnifier/README.md): Swift/AppKit tool that magnifies the desktop around the pointer (macOS 15.2+, Xcode project included).
+- [Input Method Status](README-Xcode.md): inspect the active input method in a native macOS window.
