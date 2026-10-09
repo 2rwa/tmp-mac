@@ -15,6 +15,10 @@ window.testGPU=async()=>{
   try{r.adapterInfo={vendor:adapter.info.vendor,architecture:adapter.info.architecture,device:adapter.info.device,description:adapter.info.description}}catch(e){r.errors.push('adapterInfo '+e)}
   const d=await adapter.requestDevice();
   const mod=d.createShaderModule({code:'@group(0) @binding(0) var<storage,read_write> data: array<u32>; @compute @workgroup_size(1) fn main(){data[0]=0x1234abcd;}'});
+  const computeInfo=await mod.getCompilationInfo();
+  r.computeShaderMessages=Array.from(computeInfo.messages).map(m=>({type:m.type,message:m.message}));
+  if(r.computeShaderMessages.some(m=>m.type==='error'))throw Error('WGSL compute compilation failed');
+  d.pushErrorScope('validation');
   const pipeline=d.createComputePipeline({layout:'auto',compute:{module:mod,entryPoint:'main'}});
   const buf=d.createBuffer({size:4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC});
   const out=d.createBuffer({size:4,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
@@ -23,16 +27,50 @@ window.testGPU=async()=>{
   pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.dispatchWorkgroups(1);pass.end();
   enc.copyBufferToBuffer(buf,0,out,0,4);d.queue.submit([enc.finish()]);
   await out.mapAsync(GPUMapMode.READ);const val=new Uint32Array(out.getMappedRange())[0];r.compute=(val===0x1234abcd);r.computeValue='0x'+val.toString(16);out.unmap();buf.destroy();out.destroy();
-  const canvas=document.getElementById('gpu'),ctx=canvas.getContext('webgpu');
-  if(!ctx)throw Error('WebGPU canvas context unavailable');
-  const format=navigator.gpu.getPreferredCanvasFormat();ctx.configure({device:d,format,alphaMode:'opaque'});
-  const shader=d.createShaderModule({code:'@vertex fn v(@builtin(vertex_index) i:u32)->@builtin(position) vec4f {var p=array<vec2f,3>(vec2f(-0.85,-0.75),vec2f(0.85,-0.75),vec2f(0.0,0.85));return vec4f(p[i],0.0,1.0);} @fragment fn f()->@location(0) vec4f{return vec4f(0.08,0.95,0.5,1.0);}'});
-  const rp=d.createRenderPipeline({layout:'auto',vertex:{module:shader,entryPoint:'v'},fragment:{module:shader,entryPoint:'f',targets:[{format}]}});
-  const ce=d.createCommandEncoder(),p=ce.beginRenderPass({colorAttachments:[{view:ctx.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0.08,g:0.1,b:0.28,a:1}}]});
-  p.setPipeline(rp);p.draw(3);p.end();d.queue.submit([ce.finish()]);await d.queue.onSubmittedWorkDone();
-  r.render=true;r.renderFormat=format;
+  const computeError=await d.popErrorScope();if(computeError)throw Error('Compute validation: '+computeError.message);
+  const canvas=document.getElementById('gpu');
+  const format=navigator.gpu.getPreferredCanvasFormat();
+  r.renderFormat=format;
+  const shader=d.createShaderModule({code:'@vertex fn vertexMain(@builtin(vertex_index) vertexIndex:u32)->@builtin(position) vec4f {var triangleCoords=array<vec2f,3>(vec2f(-0.85,-0.75),vec2f(0.85,-0.75),vec2f(0.0,0.85));return vec4f(triangleCoords[vertexIndex],0.0,1.0);} @fragment fn fragmentMain()->@location(0) vec4f{return vec4f(0.08,0.95,0.5,1.0);}'});
+  const compilation=await shader.getCompilationInfo();
+  r.renderShaderMessages=Array.from(compilation.messages).map(m=>({type:m.type,message:m.message}));
+  if(r.renderShaderMessages.some(m=>m.type==='error'))throw Error('WGSL render compilation failed');
+  d.pushErrorScope('validation');
+  const renderPipeline=d.createRenderPipeline({layout:'auto',vertex:{module:shader,entryPoint:'vertexMain'},fragment:{module:shader,entryPoint:'fragmentMain',targets:[{format}]}});
+  const texture=d.createTexture({size:[64,64],format,usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.COPY_SRC});
+  const readBuffer=d.createBuffer({size:16384,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ});
+  const offscreenEncoder=d.createCommandEncoder();
+  const offscreenPass=offscreenEncoder.beginRenderPass({colorAttachments:[{view:texture.createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0.08,g:0.1,b:0.28,a:1}}]});
+  offscreenPass.setPipeline(renderPipeline);offscreenPass.draw(3);offscreenPass.end();
+  offscreenEncoder.copyTextureToBuffer({texture},{buffer:readBuffer,bytesPerRow:256},{width:64,height:64,depthOrArrayLayers:1});
+  d.queue.submit([offscreenEncoder.finish()]);await d.queue.onSubmittedWorkDone();
+  const offscreenError=await d.popErrorScope();
+  if(offscreenError)throw Error('Offscreen render validation: '+offscreenError.message);
+  await readBuffer.mapAsync(GPUMapMode.READ);
+  const bytes=new Uint8Array(readBuffer.getMappedRange());
+  r.offscreenPixel=Array.from(bytes.slice(32*256+32*4,32*256+32*4+4));
+  r.render=r.offscreenPixel[1]>150;
+  readBuffer.unmap();readBuffer.destroy();texture.destroy();
+  if(!r.render)r.errors.push('Offscreen readback did not contain a green triangle');
+  try{
+    d.pushErrorScope('validation');
+    const ctx=canvas.getContext('webgpu');
+    if(!ctx)throw Error('WebGPU canvas context unavailable');
+    ctx.configure({device:d,format,alphaMode:'opaque'});
+    const canvasEncoder=d.createCommandEncoder();
+    const canvasPass=canvasEncoder.beginRenderPass({colorAttachments:[{view:ctx.getCurrentTexture().createView(),loadOp:'clear',storeOp:'store',clearValue:{r:0.08,g:0.1,b:0.28,a:1}}]});
+    canvasPass.setPipeline(renderPipeline);canvasPass.draw(3);canvasPass.end();
+    d.queue.submit([canvasEncoder.finish()]);await d.queue.onSubmittedWorkDone();
+    const canvasError=await d.popErrorScope();
+    if(canvasError)throw Error('Canvas render validation: '+canvasError.message);
+    r.canvasRender=true;
+  }catch(e){
+    r.canvasRender=false;r.canvasError=String(e.message||e).slice(0,900);
+    try{const scopedError=await d.popErrorScope();if(scopedError)r.canvasError+='; '+scopedError.message}catch{}
+  }
+
  }catch(e){r.errors.push((e.stack||String(e)).slice(0,1500))}
- document.getElementById('state').textContent=r.compute&&r.render?'GPU compute + triangle PASS':'Probe failed or unsupported';
+ document.getElementById('state').textContent=r.compute&&r.render?(r.canvasRender?'Compute / offscreen / canvas PASS':'Compute / offscreen PASS; canvas unavailable'):'Probe failed or unsupported';
  log();return r;
 };
 </script></body></html>

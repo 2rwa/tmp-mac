@@ -10,10 +10,10 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const url='http://127.0.0.1:'+server.address().port+'/';
 const results=[];
 const save=o=>{results.push(o);console.log(JSON.stringify(o,null,2))};
-async function browserProbe(engine,label,args=[]){
+async function browserProbe(engine,label,args=[],options={}){
  let b;const r={browser:label,launch:false};
  try{
-  b=await engine.launch({headless:true,args,timeout:60000});r.launch=true;
+  b=await engine.launch({headless:true,args,timeout:60000,...options});r.launch=true;
   const page=await b.newPage({viewport:{width:900,height:700}});
   page.on('console',msg=>console.log(label+' '+msg.type()+': '+msg.text().slice(0,300)));
   await page.goto(url,{timeout:30000});
@@ -24,6 +24,7 @@ async function browserProbe(engine,label,args=[]){
  finally{try{await b?.close()}catch{}save(r)}
 }
 await browserProbe(chromium,'chromium',['--enable-unsafe-webgpu']);
+await browserProbe(chromium,'google-chrome',['--enable-unsafe-webgpu'],{channel:'chrome'});
 await browserProbe(webkit,'playwright-webkit');
 async function safariProbe(){
  const r={browser:'native-safari',launch:false};
@@ -54,9 +55,9 @@ async function safariProbe(){
  }
 }
 await safariProbe();
-const rows=['# macOS 26 browser and GPU results','','| Browser | Launch | Screenshot | WebGPU | Adapter | WGSL compute | Triangle |','|---|---|---|---|---|---|---|'];
-for(const r of results){const p=r.probe||{};rows.push('| '+r.browser+' | '+!!r.launch+' | '+!!r.screenshot+' | '+!!p.webgpu+' | '+!!p.adapter+' | '+!!p.compute+' | '+!!p.render+' |')}
-rows.push('','Playwright WebKit is not Safari.app; native Safari WebDriver is tested separately. WebGPU success may be software-rendered (inspect adapterInfo and Metal inventory).');
+const rows=['# macOS 26 browser and GPU results','','| Browser | Launch | Screenshot | WebGPU | Adapter | WGSL compute | Offscreen pixels | Canvas render |','|---|---|---|---|---|---|---|---|'];
+for(const r of results){const p=r.probe||{};rows.push('| '+r.browser+' | '+!!r.launch+' | '+!!r.screenshot+' | '+!!p.webgpu+' | '+!!p.adapter+' | '+!!p.compute+' | '+!!p.render+' | '+!!p.canvasRender+' |')}
+rows.push('','Playwright WebKit is not Safari.app; native Safari WebDriver is tested separately. Canvas rendering and offscreen drawing have independent results. WebGPU success may be software-rendered (inspect adapterInfo and Metal inventory).');
 for(const r of results)if(r.error||r.probe?.errors?.length)rows.push('','**'+r.browser+'**: `'+String(r.error||r.probe.errors.join('; ')).replaceAll('`',"'").slice(0,700)+'`');
 writeFileSync('artifacts/report.md',rows.join('\n')+'\n');writeFileSync('artifacts/results.json',JSON.stringify(results,null,2));
 server.close();
