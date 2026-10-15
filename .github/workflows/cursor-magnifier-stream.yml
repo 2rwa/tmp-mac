@@ -1,0 +1,50 @@
+name: Cursor Magnifier Stream (macOS arm64)
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cursor-magnifier-stream/**'
+      - '.github/workflows/cursor-magnifier-stream.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain and plist
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          plutil -lint cursor-magnifier-stream/Info.plist
+      - name: Compile standalone native app
+        run: |
+          set -euo pipefail
+          bash cursor-magnifier-stream/build.sh "$RUNNER_TEMP/stream-build" 2>&1 | tee build.log
+      - name: Run pure logic self tests
+        run: |
+          set -euo pipefail
+          EXE="$RUNNER_TEMP/stream-build/CursorMagnifierStream.app/Contents/MacOS/CursorMagnifierStream"
+          "$EXE" --self-test | tee self-test.log
+          file "$EXE"
+          codesign --verify --deep --strict "$RUNNER_TEMP/stream-build/CursorMagnifierStream.app"
+      - name: Package app and source
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          ditto -c -k --keepParent "$RUNNER_TEMP/stream-build/CursorMagnifierStream.app" \
+            artifacts/CursorMagnifierStream-arm64.zip
+          ditto -c -k --keepParent cursor-magnifier-stream \
+            artifacts/CursorMagnifierStream-source.zip
+          cp build.log self-test.log artifacts/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cursor-magnifier-stream-macos-arm64
+          path: |
+            artifacts/
+            build.log
+            self-test.log
+          if-no-files-found: warn

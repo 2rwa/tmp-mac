@@ -11,4 +11,6 @@ The macOS hosted runner may not expose a usable desktop session or Metal acceler
 ## macOS utilities
 
 - [Cursor Magnifier](cursor-magnifier/README.md): Swift/AppKit tool that magnifies the desktop around the pointer (macOS 15.2+, Xcode project included).
+
+- [Cursor Magnifier Stream](cursor-magnifier-stream/README.md): alternative low-overhead ScreenCaptureKit video stream magnifier with dirty-frame and mouse-motion throttling (macOS 15.2+).
 - [Input Method Status](README-Xcode.md): inspect the active input method in a native macOS window.
