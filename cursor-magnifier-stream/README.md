@@ -1,69 +1,60 @@
-# Cursor Magnifier Stream (low-overhead experiment)
+# Cursor Magnifier Stream — Hybrid v0.2
 
-A **separate app** from `cursor-magnifier/`. Swift/AppKit + ScreenCaptureKit,
-macOS 15.2+, Apple Silicon. No screenshot polling, no video file encoding.
+A separate native macOS magnifier in `2rwa/tmp-mac`, independent of the original
+`cursor-magnifier/` screenshot-only application. Requires macOS 15.2+
+(Apple Silicon recommended).
 
-## Design
+## Cursor behavior
 
-- Uses `SCStream` instead of requesting 12 standalone screenshots per second.
-- Captures only a small `sourceRect` around the cursor, not the full display.
-- Handles `SCFrameStatus.idle`, plus empty `SCStreamFrameInfo.dirtyRects`;
-  unchanged frames are not converted from CVPixelBuffer to CGImage or redrawn.
-- Motion policy polls the pointer at 30Hz: normal 12fps, medium 4fps, high
-  motion freezes preview; high motion lasting over 700ms stops capture.
-- 180ms of sufficiently slow motion re-enables capture. Hysteresis avoids
-  rapid stop/restart. Updating the crop has a movement threshold and 120ms
-  minimum interval. No permanent stream reconfiguration each pointer tick.
-- CIContext is reused for converting changed video frames to CGImage;
-  the rest of the capture path uses native ScreenCaptureKit buffers.
-- Output frames are not compressed or written to disk.
+- **While the pointer is moving:** request independent pointer-centered screenshots
+  at a **configurable 1–12 fps** (default **8 fps**). A bounded, serial async
+  request prevents screenshot requests from piling up. Fast movement is **not
+  suppressed**; the cadence is controlled only by your FPS setting.
+- **After the pointer stops (~250 ms):** switch to `SCStream` (12fps) on the
+  now-fixed crop. Animated content under the stationary cursor continues to
+  update. The video output checks `SCFrameStatus` and `dirtyRects` to skip
+  decoding and redrawing unchanged frames.
+- **When movement resumes:** leave the stationary stream and immediately attempt
+  a pointer-centered screenshot, then continue at the configured cadence.
+- Pointer coordinates are sampled at ~30Hz independently from screenshot FPS;
+  a 1.5-point tolerance suppresses jitter-based mode toggling.
+- Zoom 2–12×, pause/resume and screen recording permission UI remain.
+  No video is encoded or uploaded.
 
-**Caveats:** ScreenCaptureKit still has WindowServer/capture overhead while
-streaming; dirtyRects only saves downstream work. The crop is moved with
-`SCStream.updateConfiguration` as required, which can incur overhead.
-A new crop is forced to render when an output frame arrives. Mouse movement
-alone need not dirty the captured display if the OS hides the pointer from
-the capture; we explicitly request a frame after a crop change.
+**Settings:** select **追従FPS設定…**, choose 1–12fps on the slider.
+The FPS setting is saved using `UserDefaults` and restored on launch. It
+affects only the **moving** phase; stationary streaming remains 12fps.
 
-## Open directly in Xcode
+**Trade-off:** moving screenshots incur more per-request overhead than a
+persistent stream. The stationary stream avoids continuously changing
+`SCStream.sourceRect`. The design favors clear tracking over aggressive
+motion throttling. This is not a measured CPU improvement yet.
 
-1. Open **`CursorMagnifierStream.xcodeproj`** from the repository root in Xcode.
-2. Select the shared **CursorMagnifierStream** scheme and **My Mac**.
-3. Press **Command-R** (Run) or **Command-B** (Build).
-4. Grant Screen Recording permission when prompted, then restart the app.
+## Open in Xcode
 
-If you are downloading from Actions, unpack `CursorMagnifierStream-Xcode-source.zip`.
-It contains both the `.xcodeproj` and the Swift sources with their
-relative paths intact. No manual source-file registration, Package.swift,
-or shell commands are required.
+1. Open **`CursorMagnifierStream.xcodeproj`** at the repository root.
+2. Choose the shared **CursorMagnifierStream** scheme and **My Mac**.
+3. Press **Command-R** to compile and run.
+4. Grant **Screen Recording** permission and restart the app when macOS asks.
 
-## Build
+GitHub Actions automatically tests the Xcode project and packages both
+`CursorMagnifierStream-arm64.zip` and
+`CursorMagnifierStream-Xcode-source.zip` under:
+[Cursor Magnifier Stream workflow](../../actions/workflows/cursor-magnifier-stream.yml).
+The latter includes both the project and its source tree at correct paths.
 
-A GitHub Actions macOS ARM64 job automatically runs on pushes to this
-directory or on manual dispatch:
-[Actions: Cursor Magnifier Stream](../../actions/workflows/cursor-magnifier-stream.yml).
+The existing CLI build still works:
 
-Download the `cursor-magnifier-stream-macos-arm64` artifact, unzip
-`CursorMagnifierStream-arm64.zip`, and open the app on a Mac.
-The app uses an ad-hoc signature, not Developer ID or notarization.
-You may need to open it through System Settings > Privacy & Security.
-
-Local compilation (requires Xcode command line tools):
 ```bash
 bash cursor-magnifier-stream/build.sh
 cursor-magnifier-stream/build/CursorMagnifierStream.app/Contents/MacOS/CursorMagnifierStream --self-test
 ```
 
-The GUI needs macOS **Screen & System Audio Recording** authorization.
-Click `画面収録を許可`, then restart the app after granting the permission.
+## Test coverage and limitations
 
-The Actions runner has no user-granted screen-capture permission:
-it can compile, sign and self-test but **cannot validate actual capture,
-cursor tracking, CPU or WindowServer load**. Test those on a real Mac.
-
-## Suggested performance experiment
-
-Compare the existing `cursor-magnifier/` and this stream build with
-Activity Monitor's CPU and WindowServer columns for 60 seconds each:
-idle pointer, slow cursor tracking, fast cursor motion, and playing a
-video under the lens. Also compare delay on fast-motion recovery.
+Actions on `macos-26` can validate both builds, code signing and pure
+cursor/coordinate tests. A headless CI session **cannot validate actual screen
+capture or responsiveness**, because screen recording permission and an
+interactive desktop are required. Test the changeover and frame cadence on
+a real Mac. Compare idle/slow/fast movement, streaming a video under a
+stationary cursor, and WindowServer CPU to the earlier build.

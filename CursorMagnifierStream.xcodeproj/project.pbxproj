@@ -10,6 +10,9 @@
 		AA0000000000000000000020 /* MotionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000021 /* MotionPolicy.swift */; };
 		AA0000000000000000000022 /* FrameSink.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* FrameSink.swift */; };
 		AA0000000000000000000024 /* RegionStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* RegionStream.swift */; };
+
+        AA0000000000000000000030 /* ZoomPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* ZoomPreview.swift */; };
+        AA0000000000000000000032 /* SettingsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* SettingsPanel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,6 +22,9 @@
 		AA0000000000000000000021 /* MotionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionPolicy.swift; sourceTree = "<group>"; };
 		AA0000000000000000000023 /* FrameSink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameSink.swift; sourceTree = "<group>"; };
 		AA0000000000000000000025 /* RegionStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RegionStream.swift; sourceTree = "<group>"; };
+
+        AA0000000000000000000031 /* ZoomPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomPreview.swift; sourceTree = "<group>"; };
+        AA0000000000000000000033 /* SettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPanel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,7 +66,9 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000002 /* StreamMagnifier.swift */,
-				AA0000000000000000000021 /* MotionPolicy.swift */,
+				AA0000000000000000000031 /* ZoomPreview.swift */,
+                AA0000000000000000000033 /* SettingsPanel.swift */,
+                AA0000000000000000000021 /* MotionPolicy.swift */,
 				AA0000000000000000000025 /* RegionStream.swift */,
 				AA0000000000000000000023 /* FrameSink.swift */,
 			);
@@ -129,7 +137,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000001 /* StreamMagnifier.swift in Sources */,
-				AA0000000000000000000020 /* MotionPolicy.swift in Sources */,
+				AA0000000000000000000030 /* ZoomPreview.swift in Sources */,
+                AA0000000000000000000032 /* SettingsPanel.swift in Sources */,
+                AA0000000000000000000020 /* MotionPolicy.swift in Sources */,
 				AA0000000000000000000024 /* RegionStream.swift in Sources */,
 				AA0000000000000000000022 /* FrameSink.swift in Sources */,
 			);

@@ -4,166 +4,120 @@ import CoreMedia
 import CoreVideo
 import ScreenCaptureKit
 
+// Single, independently throttled screenshots while the mouse is moving.
+@MainActor
+final class MovingSnapshot {
+    var onFrame: ((CGImage, CGPoint) -> Void)?
+    var onError: ((String) -> Void)?
+    private var task: Task<Void, Never>?
+    private var generation = 0
+    private var busy = false
+
+    @discardableResult
+    func request(region: DisplayRegion, cursor: CGPoint) -> Bool {
+        guard !busy else { return false }
+        busy = true
+        let expected = generation
+        let target = region.target(cursor)
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.busy = false }
+            do {
+                let cgImage = try await SCScreenshotManager.captureImage(in: region.globalRect)
+                guard !Task.isCancelled, self.generation == expected else { return }
+                self.onFrame?(cgImage, target)
+            } catch {
+                guard self.generation == expected, !Task.isCancelled else { return }
+                self.onError?("追従画像の取得に失敗: \(error.localizedDescription)")
+            }
+        }
+        return true
+    }
+
+    func cancel() {
+        generation += 1
+        task?.cancel()
+        task = nil
+    }
+}
+
+// A stationary crop uses a video stream. Cursor movement invalidates startup
+// and stops the stream; there is no high-speed motion suppression or crop
+// reconfiguration during movement.
 @MainActor
 final class RegionStream {
     var onFrame: ((CGImage) -> Void)?
     var onStatus: ((String) -> Void)?
-    private let sink = FrameSink()
-    private let queue = DispatchQueue(label: "cursor.magnifier.stream.frames")
+    private let queue = DispatchQueue(label: "cursor.magnifier.hybrid.video")
     private var stream: SCStream?
-    private var running = false
-    private var busy = false
-    private var current: DisplayRegion?
-    private var currentFPS = 0
-    private var lastConfigTime: TimeInterval = 0
-    private var fastSince: TimeInterval?
+    private var frameSink: FrameSink?
+    private var currentRegion: DisplayRegion?
+    private var starting = false
     private var generation = 0
-    private(set) var configurationUpdates = 0
 
-    init() {
-        sink.onFrame = { [weak self] frame in
-            guard let self, self.running else { return }
-            self.onFrame?(frame)
-        }
-    }
-
-    func tick(region: DisplayRegion, mode: MotionMode, time: TimeInterval) {
-        if mode == .fast {
-            if fastSince == nil { fastSince = time }
-            if let since = fastSince, time - since >= 0.7,
-               running && !busy { pauseCapture() }
-            return
-        }
-        fastSince = nil
-        guard !busy else { return }
-        let desiredFPS = (mode == .reduced) ? 4 : 12
-        if !running {
-            startCapture(region: region, fps: desiredFPS, time: time)
-        } else if let current {
-            if (current.displayID != region.displayID ||
-                CropGeometry.shouldRecenter(current.globalRect, region.globalRect) ||
-                currentFPS != desiredFPS),
-               time - lastConfigTime > 0.12 {
-                configure(region: region, fps: desiredFPS, time: time)
-            }
-        }
-    }
-
-    private func configuration(_ region: DisplayRegion, fps: Int) -> SCStreamConfiguration {
-        let config = SCStreamConfiguration()
-        config.sourceRect = region.localRect
-        config.width = max(32, Int(ceil(region.globalRect.width * 2)))
-        config.height = max(32, Int(ceil(region.globalRect.height * 2)))
-        config.scalesToFit = true
-        config.showsCursor = false
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        config.queueDepth = 3
-        config.pixelFormat = kCVPixelFormatType_32BGRA
-        return config
-    }
-
-    private func startCapture(region: DisplayRegion, fps: Int, time: TimeInterval) {
-        guard !busy else { return }
-        busy = true
+    func startIfNeeded(region: DisplayRegion) {
+        guard stream == nil, !starting else { return }
+        starting = true
         generation += 1
-        let ticket = generation
+        let expected = generation
         Task { [weak self] in
             guard let self else { return }
-            defer { self.busy = false }
+            defer { self.starting = false }
             do {
-                let shareable = try await SCShareableContent.excludingDesktopWindows(
+                let available = try await SCShareableContent.excludingDesktopWindows(
                     false, onScreenWindowsOnly: true)
-                guard ticket == self.generation else { return }
-                guard let display = shareable.displays.first(where: {
+                guard self.generation == expected else { return }
+                guard let display = available.displays.first(where: {
                     $0.displayID == region.displayID
                 }) else {
                     self.onStatus?("対象ディスプレイが見つかりません")
                     return
                 }
+                let config = SCStreamConfiguration()
+                config.sourceRect = region.localRect
+                config.width = max(32, Int(ceil(region.globalRect.width * 2)))
+                config.height = max(32, Int(ceil(region.globalRect.height * 2)))
+                config.scalesToFit = true
+                config.showsCursor = false
+                config.minimumFrameInterval = CMTime(value: 1, timescale: 12)
+                config.queueDepth = 3
+                config.pixelFormat = kCVPixelFormatType_32BGRA
+
                 let filter = SCContentFilter(display: display, excludingWindows: [])
-                let capture = SCStream(filter: filter,
-                                       configuration: self.configuration(region, fps: fps),
-                                       delegate: nil)
-                try capture.addStreamOutput(self.sink, type: .screen,
-                                             sampleHandlerQueue: self.queue)
-                self.sink.forceNextFrame()
+                let capture = SCStream(filter: filter, configuration: config, delegate: nil)
+                let sink = FrameSink()
+                sink.onFrame = { [weak self] frame in
+                    guard let self, self.generation == expected else { return }
+                    self.onFrame?(frame)
+                }
+                sink.forceNextFrame()
+                try capture.addStreamOutput(sink, type: .screen,
+                                            sampleHandlerQueue: self.queue)
                 try await capture.startCapture()
+                guard self.generation == expected else {
+                    try? await capture.stopCapture()
+                    return
+                }
+                self.frameSink = sink
                 self.stream = capture
-                self.running = true
-                self.current = region
-                self.currentFPS = fps
-                self.lastConfigTime = time
-                self.onStatus?("動画ストリーム起動: \(fps) fps")
+                self.currentRegion = region
+                self.onStatus?("停止位置で動画ストリーム 12fps")
+                // SCStream retains the output as long as it remains registered.
             } catch {
-                self.running = false
-                self.stream = nil
-                self.onStatus?("起動失敗: \(error.localizedDescription)")
+                guard self.generation == expected else { return }
+                self.onStatus?("動画ストリーム起動失敗: \(error.localizedDescription)")
             }
-        }
-    }
-
-    private func configure(region: DisplayRegion, fps: Int, time: TimeInterval) {
-        guard !busy, let stream else { return }
-        if current?.displayID != region.displayID {
-            stopCapture(thenStart: region, fps: fps, time: time)
-            return
-        }
-        busy = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.busy = false }
-            do {
-                self.sink.forceNextFrame()
-                try await stream.updateConfiguration(self.configuration(region, fps: fps))
-                self.current = region
-                self.currentFPS = fps
-                self.lastConfigTime = time
-                self.configurationUpdates += 1
-            } catch {
-                self.onStatus?("領域変更失敗: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func pauseCapture() {
-        guard !busy, let stream, running else { return }
-        busy = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.busy = false }
-            do {
-                try await stream.stopCapture()
-                self.running = false
-                self.stream = nil
-                self.current = nil
-                self.onStatus?("高速移動が継続: キャプチャ停止")
-            } catch {
-                self.onStatus?("停止失敗: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func stopCapture(thenStart region: DisplayRegion, fps: Int,
-                             time: TimeInterval) {
-        guard !busy, let stream else { return }
-        busy = true
-        Task { [weak self] in
-            guard let self else { return }
-            do { try await stream.stopCapture() }
-            catch { self.onStatus?("画面切替時の停止失敗: \(error.localizedDescription)") }
-            self.running = false
-            self.stream = nil
-            self.current = nil
-            self.busy = false
-            self.startCapture(region: region, fps: fps, time: time)
         }
     }
 
     func stop() {
         generation += 1
-        guard let stream else { return }
-        self.stream = nil
-        running = false
-        Task { try? await stream.stopCapture() }
+        currentRegion = nil
+        frameSink = nil
+        guard let old = stream else { return }
+        stream = nil
+        Task { try? await old.stopCapture() }
     }
+
+    var isRunning: Bool { stream != nil }
 }

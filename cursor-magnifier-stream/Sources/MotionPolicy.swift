@@ -1,54 +1,79 @@
 import AppKit
 import CoreGraphics
 
-enum MotionMode: String {
-    case normal = "通常 12fps"
-    case reduced = "移動中 4fps"
-    case fast = "高速移動・更新抑制"
+enum CapturePhase: String {
+    case following = "移動中：静止画追従"
+    case stationary = "停止中：動画ストリーム"
 }
 
-struct MotionPolicy {
-    private(set) var mode: MotionMode = .normal
-    private var previousPoint: CGPoint?
-    private var previousTime: TimeInterval?
-    private var filteredSpeed = 0.0
-    private var calmSince: TimeInterval?
+// Pointer motion is sampled independently from the requested screenshot FPS.
+// A positional tolerance prevents a tiny jitter from repeatedly restarting SCStream.
+struct CursorMotionPolicy {
+    private var anchor: CGPoint?
+    private var lastMotionTime: TimeInterval = 0
+    private var lastSnapshotTime = -Double.infinity
+    private(set) var phase: CapturePhase = .following
+    let settleDelay: TimeInterval = 0.25
+    let movementTolerance: CGFloat = 1.5
 
-    mutating func sample(_ point: CGPoint, at now: TimeInterval) -> MotionMode {
-        defer { previousPoint = point; previousTime = now }
-        guard let before = previousPoint, let time = previousTime,
-              now > time, now - time < 0.5 else {
-            filteredSpeed = 0
-            return mode
+    mutating func sample(_ point: CGPoint, at now: TimeInterval) -> CapturePhase {
+        guard let anchor else {
+            self.anchor = point
+            lastMotionTime = now
+            phase = .following
+            return phase
         }
-        let speed = Double(hypot(point.x - before.x, point.y - before.y))
-            / (now - time)
-        filteredSpeed = filteredSpeed * 0.5 + speed * 0.5
-        switch mode {
-        case .normal:
-            if filteredSpeed > 900 { mode = .fast; calmSince = nil }
-            else if filteredSpeed > 150 { mode = .reduced }
-        case .reduced:
-            if filteredSpeed > 900 { mode = .fast; calmSince = nil }
-            else if filteredSpeed < 100 { mode = .normal }
-        case .fast:
-            if filteredSpeed < 350 {
-                if calmSince == nil { calmSince = now }
-                if let since = calmSince, now - since >= 0.18 {
-                    mode = filteredSpeed > 150 ? .reduced : .normal
-                    calmSince = nil
-                }
-            } else { calmSince = nil }
+        if hypot(point.x - anchor.x, point.y - anchor.y) >= movementTolerance {
+            self.anchor = point
+            lastMotionTime = now
+            phase = .following
+        } else if now - lastMotionTime >= settleDelay {
+            phase = .stationary
         }
-        return mode
+        return phase
+    }
+
+    mutating func invalidate(at now: TimeInterval) {
+        anchor = nil
+        lastMotionTime = now
+        lastSnapshotTime = -.infinity
+        phase = .following
+    }
+
+    func canRequestSnapshot(at now: TimeInterval, fps: Int) -> Bool {
+        let rate = max(1, min(12, fps))
+        return now - lastSnapshotTime >= 1.0 / Double(rate)
+    }
+
+    mutating func markSnapshotRequested(at now: TimeInterval) {
+        lastSnapshotTime = now
+    }
+
+    mutating func resetSnapshotClock() {
+        lastSnapshotTime = -.infinity
     }
 
     static func selfTest() -> Bool {
-        var p = MotionPolicy()
-        _ = p.sample(.zero, at: 0)
-        guard p.sample(CGPoint(x: 100, y: 0), at: 0.033) == .fast else { return false }
-        for i in 2...12 { _ = p.sample(CGPoint(x: 100, y: 0), at: Double(i) * 0.033) }
-        return p.mode == .normal
+        var p = CursorMotionPolicy()
+        guard p.sample(.zero, at: 0) == .following,
+              p.canRequestSnapshot(at: 0, fps: 1),
+              p.sample(.zero, at: 0.01) == .following
+        else { return false }
+        p.markSnapshotRequested(at: 0)
+        guard !p.canRequestSnapshot(at: 0.8, fps: 1),
+              p.canRequestSnapshot(at: 1.01, fps: 1),
+              p.sample(CGPoint(x: 50, y: 0), at: 1.1) == .following,
+              p.sample(CGPoint(x: 50.5, y: 0), at: 1.2) == .following,
+              p.sample(CGPoint(x: 50.5, y: 0), at: 1.36) == .stationary,
+              p.sample(CGPoint(x: 65, y: 0), at: 1.4) == .following
+        else { return false }
+        p.invalidate(at: 1.41)
+        guard p.sample(CGPoint(x: 65, y: 0), at: 1.42) == .following,
+              p.canRequestSnapshot(at: 1.42, fps: 12) else { return false }
+        p.markSnapshotRequested(at: 1.42)
+        guard !p.canRequestSnapshot(at: 1.45, fps: 12),
+              p.canRequestSnapshot(at: 1.51, fps: 12) else { return false }
+        return true
     }
 }
 

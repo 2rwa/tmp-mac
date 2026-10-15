@@ -2,68 +2,36 @@ import AppKit
 import CoreGraphics
 import Darwin
 
-final class ZoomPreview: NSView {
-    var image: NSImage? { didSet { needsDisplay = true } }
-    var target = CGPoint(x: 0.5, y: 0.5) {
-        didSet {
-            if abs(target.x - oldValue.x) > 0.002 ||
-               abs(target.y - oldValue.y) > 0.002 { needsDisplay = true }
-        }
-    }
-    override var isFlipped: Bool { false }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.setFill()
-        NSBezierPath(rect: bounds).fill()
-        if let image {
-            NSGraphicsContext.current?.imageInterpolation = .none
-            image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1)
-        } else {
-            let hint = "画面収録を許可すると、ここに拡大表示します"
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 13),
-                .foregroundColor: NSColor.lightGray
-            ]
-            let sz = (hint as NSString).size(withAttributes: attributes)
-            (hint as NSString).draw(at: CGPoint(x: (bounds.width-sz.width)/2,
-                                                y: (bounds.height-sz.height)/2),
-                                     withAttributes: attributes)
-        }
-        let x = target.x * bounds.width
-        let y = (1 - target.y) * bounds.height
-        let cross = NSBezierPath()
-        cross.move(to: CGPoint(x: x-14, y: y))
-        cross.line(to: CGPoint(x: x-4, y: y))
-        cross.move(to: CGPoint(x: x+4, y: y))
-        cross.line(to: CGPoint(x: x+14, y: y))
-        cross.move(to: CGPoint(x: x, y: y-14))
-        cross.line(to: CGPoint(x: x, y: y-4))
-        cross.move(to: CGPoint(x: x, y: y+4))
-        cross.line(to: CGPoint(x: x, y: y+14))
-        cross.lineWidth = 2
-        NSColor.systemYellow.setStroke()
-        cross.stroke()
-    }
-}
-
 @MainActor
 final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
     private let preview = ZoomPreview()
     private let status = NSTextField(labelWithString: "起動中")
-    private let modeLabel = NSTextField(labelWithString: "通常 12fps")
+    private let modeLabel = NSTextField(labelWithString: "移動中：静止画追従")
+    let rateLabel = NSTextField(labelWithString: "追従 8fps")
+    let settingsRateLabel = NSTextField(labelWithString: "8 fps")
     private let zoomLabel = NSTextField(labelWithString: "4.0×")
     private var window: NSWindow?
     private var timer: Timer?
     private var zoom: CGFloat = 4
     private var paused = false
-    private var policy = MotionPolicy()
-    private let capture = RegionStream()
-    private var lastMode: MotionMode?
+    var followFPS = 8
+    let preferenceKey = "CursorMagnifierStream.cursorFollowFPS"
+    var settingsWindow: NSPanel?
+    private var policy = CursorMotionPolicy()
+    private let snapshots = MovingSnapshot()
+    private let video = RegionStream()
+    private var phase: CapturePhase?
+    private var stationaryTarget = CGPoint(x: 0.5, y: 0.5)
+    private var previousSize = CGSize.zero
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let stored = UserDefaults.standard.integer(forKey: preferenceKey)
+        followFPS = (1...12).contains(stored) ? stored : 8
+        rateLabel.stringValue = "追従 \(followFPS)fps"
         let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 655),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "Cursor Magnifier Stream"
+        w.title = "Cursor Magnifier Stream — Hybrid"
         w.minSize = NSSize(width: 340, height: 550)
         w.center()
         w.level = .floating
@@ -74,14 +42,18 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
         preview.wantsLayer = true
         preview.layer?.cornerRadius = 8
         preview.layer?.masksToBounds = true
-        let title = NSTextField(labelWithString: "低負荷・動画ストリーム拡大鏡")
+        let title = NSTextField(labelWithString: "カーソル追従 + 停止位置の動画")
         title.font = .boldSystemFont(ofSize: 18)
-        let hint = NSTextField(labelWithString: "画面の差分のみ描画 / 高速マウス移動時は抑制")
+        let hint = NSTextField(labelWithString: "移動中は指定FPSで追従、停止後は動画ストリーム")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
         let zoomSlider = NSSlider(value: 4, minValue: 2, maxValue: 12,
                                   target: self, action: #selector(zoomChanged(_:)))
         let zoomRow = row([NSTextField(labelWithString: "拡大率"), zoomSlider, zoomLabel])
+        let settingsRow = row([
+            NSButton(title: "追従FPS設定…", target: self, action: #selector(openSettings)),
+            rateLabel, modeLabel
+        ])
         let pause = NSButton(title: "一時停止 / 再開", target: self,
                              action: #selector(togglePause))
         let permission = NSButton(title: "画面収録を許可", target: self,
@@ -91,8 +63,8 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
         status.textColor = .secondaryLabelColor
         status.font = .systemFont(ofSize: 12)
         modeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
-        let content = NSStackView(views: [title, hint, preview, zoomRow, buttons,
-                                          modeLabel, status])
+        let content = NSStackView(views: [title, hint, preview, zoomRow,
+                                          settingsRow, buttons, status])
         content.orientation = .vertical
         content.alignment = .leading
         content.spacing = 12
@@ -108,16 +80,31 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
             preview.widthAnchor.constraint(equalTo: content.widthAnchor),
             preview.heightAnchor.constraint(equalTo: preview.widthAnchor),
             zoomRow.widthAnchor.constraint(equalTo: content.widthAnchor),
+            settingsRow.widthAnchor.constraint(equalTo: content.widthAnchor),
             buttons.widthAnchor.constraint(equalTo: content.widthAnchor),
             modeLabel.widthAnchor.constraint(equalTo: content.widthAnchor),
             status.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
-        capture.onFrame = { [weak self] image in
-            guard let self, !self.paused else { return }
+        snapshots.onFrame = { [weak self] image, target in
+            guard let self, !self.paused, self.phase == .following else { return }
+            self.preview.target = target
             self.preview.image = NSImage(cgImage: image,
-                                         size: NSSize(width: image.width, height: image.height))
+                size: NSSize(width: image.width, height: image.height))
         }
-        capture.onStatus = { [weak self] message in self?.status.stringValue = message }
+        snapshots.onError = { [weak self] message in
+            guard let self, self.phase == .following else { return }
+            self.status.stringValue = message
+        }
+        video.onFrame = { [weak self] image in
+            guard let self, !self.paused, self.phase == .stationary else { return }
+            self.preview.target = self.stationaryTarget
+            self.preview.image = NSImage(cgImage: image,
+                size: NSSize(width: image.width, height: image.height))
+        }
+        video.onStatus = { [weak self] message in
+            guard let self, self.phase == .stationary else { return }
+            self.status.stringValue = message
+        }
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) {
@@ -127,42 +114,73 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
         tick()
     }
 
-    private func row(_ views: [NSView]) -> NSStackView {
+    func row(_ views: [NSView]) -> NSStackView {
         let r = NSStackView(views: views)
         r.orientation = .horizontal
         r.alignment = .centerY
         r.spacing = 10
         return r
     }
+    private func resetCapture() {
+        snapshots.cancel()
+        video.stop()
+        policy.invalidate(at: ProcessInfo.processInfo.systemUptime)
+        phase = nil
+    }
+
     private func tick() {
-        guard window?.isVisible == true, !paused else { return }
+        guard !paused else { return }
+        guard window?.isVisible == true, window?.isMiniaturized == false else {
+            resetCapture()
+            return
+        }
         guard CGPreflightScreenCaptureAccess() else {
-            if status.stringValue != "画面収録の許可が必要です" {
-                status.stringValue = "画面収録の許可が必要です"
-            }
+            status.stringValue = "画面収録の許可が必要です"
             return
         }
         guard let cursor = CGEvent(source: nil)?.location else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        let mode = policy.sample(cursor, at: now)
-        if lastMode != mode {
-            lastMode = mode
-            modeLabel.stringValue = mode.rawValue
+        let size = preview.bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        if abs(previousSize.width - size.width) > 1 ||
+           abs(previousSize.height - size.height) > 1 {
+            previousSize = size
+            resetCapture()
         }
-        guard preview.bounds.width > 0, preview.bounds.height > 0 else { return }
-        let region = CropGeometry.region(point: cursor, preview: preview.bounds.size,
-                                         zoom: zoom)
-        capture.tick(region: region, mode: mode, time: now)
-        if mode != .fast { preview.target = region.target(cursor) }
+        let now = ProcessInfo.processInfo.systemUptime
+        let next = policy.sample(cursor, at: now)
+        let region = CropGeometry.region(point: cursor, preview: size, zoom: zoom)
+        if next != phase {
+            phase = next
+            modeLabel.stringValue = next.rawValue
+            if next == .following {
+                video.stop()
+                policy.resetSnapshotClock()
+                status.stringValue = "カーソル追従中（最大 \(followFPS)fps）"
+            } else {
+                snapshots.cancel()
+                stationaryTarget = region.target(cursor)
+                status.stringValue = "停止位置で動画ストリームへ切り替え"
+            }
+        }
+        if next == .following {
+            if policy.canRequestSnapshot(at: now, fps: followFPS),
+               snapshots.request(region: region, cursor: cursor) {
+                policy.markSnapshotRequested(at: now)
+            }
+        } else {
+            video.startIfNeeded(region: region)
+        }
     }
     @objc private func zoomChanged(_ sender: NSSlider) {
         zoom = CGFloat(sender.doubleValue)
         zoomLabel.stringValue = String(format: "%.1f×", sender.doubleValue)
+        resetCapture()
     }
     @objc private func togglePause() {
         paused.toggle()
-        if paused { capture.stop(); status.stringValue = "一時停止中" }
-        else { tick() }
+        resetCapture()
+        status.stringValue = paused ? "一時停止中" : "再開しました"
+        if !paused { tick() }
     }
     @objc private func requestPermission() {
         if !CGPreflightScreenCaptureAccess() {
@@ -175,7 +193,7 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
-        capture.stop()
+        resetCapture()
     }
 }
 
@@ -183,11 +201,11 @@ final class StreamMagnifierDelegate: NSObject, NSApplicationDelegate {
 struct StreamMagnifierMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            guard MotionPolicy.selfTest() && CropGeometry.selfTest() else {
+            guard CursorMotionPolicy.selfTest() && CropGeometry.selfTest() else {
                 fputs("FAIL: policy or geometry\n", stderr)
                 exit(1)
             }
-            print("PASS: mouse speed hysteresis and capture geometry")
+            print("PASS: pointer settle, 1-12fps scheduling and geometry")
         } else {
             MainActor.assumeIsolated {
                 let app = NSApplication.shared
