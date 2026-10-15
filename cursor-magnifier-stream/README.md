@@ -25,6 +25,18 @@ A new crop is forced to render when an output frame arrives. Mouse movement
 alone need not dirty the captured display if the OS hides the pointer from
 the capture; we explicitly request a frame after a crop change.
 
+## Open directly in Xcode
+
+1. Open **`CursorMagnifierStream.xcodeproj`** from the repository root in Xcode.
+2. Select the shared **CursorMagnifierStream** scheme and **My Mac**.
+3. Press **Command-R** (Run) or **Command-B** (Build).
+4. Grant Screen Recording permission when prompted, then restart the app.
+
+If you are downloading from Actions, unpack `CursorMagnifierStream-Xcode-source.zip`.
+It contains both the `.xcodeproj` and the Swift sources with their
+relative paths intact. No manual source-file registration, Package.swift,
+or shell commands are required.
+
 ## Build
 
 A GitHub Actions macOS ARM64 job automatically runs on pushes to this

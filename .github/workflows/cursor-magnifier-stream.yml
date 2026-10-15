@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - 'cursor-magnifier-stream/**'
+      - 'CursorMagnifierStream.xcodeproj/**'
       - '.github/workflows/cursor-magnifier-stream.yml'
   workflow_dispatch:
 permissions:
@@ -19,6 +20,19 @@ jobs:
           set -euo pipefail
           xcodebuild -version
           plutil -lint cursor-magnifier-stream/Info.plist
+      - name: Validate Xcode project and scheme
+        run: |
+          set -euo pipefail
+          plutil -lint CursorMagnifierStream.xcodeproj/project.pbxproj
+          xcodebuild -list -project CursorMagnifierStream.xcodeproj | tee project-list.log
+      - name: Build with Xcode Debug (arm64)
+        run: |
+          set -euo pipefail
+          xcodebuild -project CursorMagnifierStream.xcodeproj \
+            -scheme CursorMagnifierStream -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/stream-xcode" \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee xcode-build.log
       - name: Compile standalone native app
         run: |
           set -euo pipefail
@@ -28,17 +42,26 @@ jobs:
           set -euo pipefail
           EXE="$RUNNER_TEMP/stream-build/CursorMagnifierStream.app/Contents/MacOS/CursorMagnifierStream"
           "$EXE" --self-test | tee self-test.log
+          XCODE_EXE="$RUNNER_TEMP/stream-xcode/Build/Products/Debug/CursorMagnifierStream.app/Contents/MacOS/CursorMagnifierStream"
+          test -x "$XCODE_EXE"
+          "$XCODE_EXE" --self-test | tee xcode-self-test.log
+          file "$XCODE_EXE"
+          plutil -lint "$RUNNER_TEMP/stream-xcode/Build/Products/Debug/CursorMagnifierStream.app/Contents/Info.plist"
           file "$EXE"
           codesign --verify --deep --strict "$RUNNER_TEMP/stream-build/CursorMagnifierStream.app"
       - name: Package app and source
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          ditto -c -k --keepParent "$RUNNER_TEMP/stream-build/CursorMagnifierStream.app" \
+          ditto -c -k --keepParent "$RUNNER_TEMP/stream-xcode/Build/Products/Debug/CursorMagnifierStream.app" \
             artifacts/CursorMagnifierStream-arm64.zip
           ditto -c -k --keepParent cursor-magnifier-stream \
             artifacts/CursorMagnifierStream-source.zip
-          cp build.log self-test.log artifacts/
+          mkdir -p "$RUNNER_TEMP/CursorMagnifierStream-Xcode-source"
+          ditto CursorMagnifierStream.xcodeproj "$RUNNER_TEMP/CursorMagnifierStream-Xcode-source/CursorMagnifierStream.xcodeproj"
+          ditto cursor-magnifier-stream "$RUNNER_TEMP/CursorMagnifierStream-Xcode-source/cursor-magnifier-stream"
+          (cd "$RUNNER_TEMP" && ditto -c -k --keepParent CursorMagnifierStream-Xcode-source "$GITHUB_WORKSPACE/artifacts/CursorMagnifierStream-Xcode-source.zip")
+          cp build.log self-test.log project-list.log xcode-build.log xcode-self-test.log artifacts/
       - uses: actions/upload-artifact@v4
         if: always()
         with:
